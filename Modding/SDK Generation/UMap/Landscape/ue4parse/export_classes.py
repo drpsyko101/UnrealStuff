@@ -440,6 +440,84 @@ class SplineComponentProperty:
     Segments: list[AssetRef | LandscapeSplineSegment]
     RelativeLocation: Vector3D
 
+    # Sort segments into connected chains
+    def sort_segment(self):
+        # Create dictionaries to map from InValue to index and OutValue to index
+        in_value_map: dict[tuple[float, float, float], int] = {}
+        out_value_map: dict[tuple[float, float, float], int] = {}
+
+        for i, item in enumerate(self.Segments):
+            if isinstance(item, LandscapeSplineSegment):
+                # Convert the dictionaries to tuples for hashability
+                in_tuple = (
+                    item.Properties.SplineInfo.Points[0].OutVal.X,
+                    item.Properties.SplineInfo.Points[0].OutVal.Y,
+                    item.Properties.SplineInfo.Points[0].OutVal.Z,
+                )
+                out_tuple = (
+                    item.Properties.SplineInfo.Points[1].OutVal.X,
+                    item.Properties.SplineInfo.Points[1].OutVal.Y,
+                    item.Properties.SplineInfo.Points[1].OutVal.Z,
+                )
+
+                in_value_map[in_tuple] = i
+                out_value_map[out_tuple] = i
+
+        # Find starting points (points that have an InValue that doesn't match any OutValue)
+        starting_indices: list[int] = []
+        for i, item in enumerate(self.Segments):
+            if isinstance(item, LandscapeSplineSegment):
+                in_tuple = (
+                    item.Properties.SplineInfo.Points[0].OutVal.X,
+                    item.Properties.SplineInfo.Points[0].OutVal.Y,
+                    item.Properties.SplineInfo.Points[0].OutVal.Z,
+                )
+                if in_tuple not in out_value_map:
+                    starting_indices.append(i)
+
+        # Create chains starting from each starting point
+        chains: list[list[int]] = []
+        for start_idx in starting_indices:
+            chain = [start_idx]
+            current_idx = start_idx
+
+            while True:
+                current_item = self.Segments[current_idx]
+                if isinstance(current_item, LandscapeSplineSegment):
+                    out_tuple = (
+                        current_item.Properties.SplineInfo.Points[1].OutVal.X,
+                        current_item.Properties.SplineInfo.Points[1].OutVal.Y,
+                        current_item.Properties.SplineInfo.Points[1].OutVal.Z,
+                    )
+
+                    if out_tuple in in_value_map:
+                        next_idx = in_value_map[out_tuple]
+                        chain.append(next_idx)
+                        current_idx = next_idx
+                    else:
+                        # End of chain
+                        break
+                else:
+                    break
+
+            chains.append(chain)
+
+        # Sort chains by length (longest first)
+        chains.sort(key=len, reverse=True)
+
+        # Combine all chains into a single ordered list
+        ordered_indices: list[int] = []
+        for chain in chains:
+            ordered_indices.extend(chain)
+
+        # Find any points not included in any chain
+        all_indices = set(range(len(self.Segments)))
+        orphaned_indices = list(all_indices - set(ordered_indices))
+        ordered_indices.extend(orphaned_indices)
+
+        # Create the sorted data
+        self.Segments = [self.Segments[i] for i in ordered_indices]
+
 
 @dataclass
 class LandscapeSplinesComponent(Export):

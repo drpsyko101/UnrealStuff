@@ -3,6 +3,7 @@ import argparse
 import json
 import jsonpickle
 import drawsvg as draw
+import random
 from dacite import from_dict, Config
 from export_classes import (
     AssetRef,
@@ -45,6 +46,10 @@ class DrawSplines:
         with open(self.input_path, encoding="utf8") as file:
             data = json.load(file)
 
+        with open("colors.json", encoding="utf8") as file:
+            color_dict = json.load(file)
+            colors = list(color_dict.keys())
+
         # parse data
         for obj in data:
             if obj["Type"] == "LandscapeSplinesComponent":
@@ -82,6 +87,7 @@ class DrawSplines:
                                 self.bound_max.X = max(self.bound_max.X, loc.X)
                                 self.bound_max.Y = max(self.bound_max.Y, loc.Y)
                             break
+            component.Properties.sort_segment()
 
         # Replace AssetRef with valid SplineMeshComponent
         for segment in self.segments:
@@ -99,19 +105,21 @@ class DrawSplines:
         self.image_size = self.bound_max - self.bound_min
         canvas = draw.Drawing(self.image_size.X, self.image_size.Y, origin="top-left")
 
-        for component in self.components:
-            # print("Processing", component.Outer)
+        for i, component in enumerate(self.components):
             coords = []
-            path = draw.Path(stroke_width=1000, stroke="white", opacity=0.2)
+            random.shuffle(colors)
+            path = draw.Path(
+                stroke_width=1000, stroke=colors[i], opacity=1, fill="none"
+            )
             for index, segment in enumerate(component.Properties.Segments):
                 if isinstance(segment, LandscapeSplineSegment):
-                    no_coll = all(
-                        (
-                            isinstance(mesh, SplineMeshComponent)
-                            and mesh.Properties.BodyInstance is None
-                        )
-                        for mesh in segment.Properties.LocalMeshComponents
-                    )
+                    # no_coll = all(
+                    #     (
+                    #         isinstance(mesh, SplineMeshComponent)
+                    #         and mesh.Properties.BodyInstance is None
+                    #     )
+                    #     for mesh in segment.Properties.LocalMeshComponents
+                    # )
                     if index == 0:
                         canvas.append(
                             draw.Text(
@@ -122,36 +130,40 @@ class DrawSplines:
                                     + component.Properties.RelativeLocation
                                     - self.bound_min
                                 ).ToVector2D(),
-                                fill="yellow",
+                                fill=colors[i],
                                 text_anchor="middle",
                                 center=True,
                             )
                         )
-                    for loc_index, point in enumerate(
-                        segment.Properties.SplineInfo.Points
-                    ):
-                        loc = (
+                    locs = [
+                        (
                             point.OutVal
                             + component.Properties.RelativeLocation
                             - self.bound_min
                         )
-                        loc_2d = loc.ToVector2D()
-                        # print(loc_2d)
-                        coords.append(loc_2d)
-                        if loc_index == 0:
-                            path.M(*loc_2d)
-                        else:
-                            path.L(*loc_2d)
-                        canvas.append(
-                            draw.Text(
-                                str(index),
-                                1800,
-                                *loc_2d,
-                                fill="red",
-                                text_anchor="middle",
-                                center=True,
-                            )
-                        )
+                        for point in segment.Properties.SplineInfo.Points
+                    ]
+                    prev_segment = (
+                        component.Properties.Segments[index - 1] if index > 0 else None
+                    )
+                    if index == 0 or (
+                        prev_segment is not None
+                        and isinstance(prev_segment, LandscapeSplineSegment)
+                        and prev_segment.Properties.SplineInfo.Points[1].OutVal
+                        != segment.Properties.SplineInfo.Points[0].OutVal
+                    ):
+                        path.M(*locs[0].ToVector2D())
+                    path.L(*locs[1].ToVector2D())
+                    # canvas.append(
+                    #     draw.Text(
+                    #         str(index),
+                    #         1800,
+                    #         *loc_2d,
+                    #         fill="red",
+                    #         text_anchor="middle",
+                    #         center=True,
+                    #     )
+                    # )
             canvas.insert(1, path)
             processed += 1
 
