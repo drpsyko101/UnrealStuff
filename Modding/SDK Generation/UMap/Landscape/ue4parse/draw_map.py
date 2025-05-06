@@ -42,6 +42,92 @@ class DrawSplines:
                 return "ConnectionEnd"
         return key
 
+    def sort_spline_mesh(self):
+        # Create dictionaries to map from InValue to index and OutValue to index
+        in_value_map: dict[tuple[float, float, float], int] = {}
+        out_value_map: dict[tuple[float, float, float], int] = {}
+
+        for i, item in enumerate(self.spline_meshes):
+            # Convert the dictionaries to tuples for hashability
+            in_tuple = (
+                item.Properties.SplineParams.StartPos.X,
+                item.Properties.SplineParams.StartPos.Y,
+                item.Properties.SplineParams.StartPos.Z,
+            )
+            out_tuple = (
+                item.Properties.SplineParams.EndPos.X,
+                item.Properties.SplineParams.EndPos.Y,
+                item.Properties.SplineParams.EndPos.Z,
+            )
+
+            # Calculate bounds from spline mesh components as well
+            start_pos = (
+                item.Properties.SplineParams.StartPos + item.Properties.RelativeLocation
+            )
+            end_pos = (
+                item.Properties.SplineParams.EndPos + item.Properties.RelativeLocation
+            )
+            self.bound_min.X = min(self.bound_min.X, start_pos.X, end_pos.X)
+            self.bound_min.Y = min(self.bound_min.Y, start_pos.Y, end_pos.Y)
+            self.bound_max.X = max(self.bound_max.X, start_pos.X, end_pos.X)
+            self.bound_max.Y = max(self.bound_max.Y, start_pos.Y, end_pos.Y)
+
+            in_value_map[in_tuple] = i
+            out_value_map[out_tuple] = i
+
+        # Find starting points (points that have an InValue that doesn't match any OutValue)
+        starting_indices: list[int] = []
+        for i, item in enumerate(self.spline_meshes):
+            in_tuple = (
+                item.Properties.SplineParams.StartPos.X,
+                item.Properties.SplineParams.StartPos.Y,
+                item.Properties.SplineParams.StartPos.Z,
+            )
+            if in_tuple not in out_value_map:
+                starting_indices.append(i)
+
+        # Create chains starting from each starting point
+        chains: list[list[int]] = []
+        for start_idx in starting_indices:
+            chain = [start_idx]
+            current_idx = start_idx
+
+            while True:
+                current_item = self.spline_meshes[current_idx]
+                out_tuple = (
+                    current_item.Properties.SplineParams.EndPos.X,
+                    current_item.Properties.SplineParams.EndPos.Y,
+                    current_item.Properties.SplineParams.EndPos.Z,
+                )
+
+                if out_tuple in in_value_map:
+                    next_idx = in_value_map[out_tuple]
+                    chain.append(next_idx)
+                    current_idx = next_idx
+                else:
+                    # End of chain
+                    break
+            else:
+                break
+
+            chains.append(chain)
+
+        # Sort chains by length (longest first)
+        chains.sort(key=len, reverse=True)
+
+        # Combine all chains into a single ordered list
+        ordered_indices: list[int] = []
+        for chain in chains:
+            ordered_indices.extend(chain)
+
+        # Find any points not included in any chain
+        all_indices = set(range(len(self.spline_meshes)))
+        orphaned_indices = list(all_indices - set(ordered_indices))
+        ordered_indices.extend(orphaned_indices)
+
+        # Create the sorted data
+        self.spline_meshes = [self.spline_meshes[i] for i in ordered_indices]
+
     def process(self):
         with open(self.input_path, encoding="utf8") as file:
             data = json.load(file)
@@ -56,70 +142,42 @@ class DrawSplines:
                 component = from_dict(LandscapeSplinesComponent, obj)
                 self.components.append(component)
 
-            if obj["Type"] == "LandscapeSplineSegment":
-                segment = from_dict(
-                    LandscapeSplineSegment,
-                    obj,
-                    Config(convert_key=self.convert_key_explicit),
-                )
-                self.segments.append(segment)
-
-            if obj["Type"] == "SplineMeshComponent":
-                spline_mesh = from_dict(
-                    SplineMeshComponent,
-                    obj,
-                )
-                self.spline_meshes.append(spline_mesh)
-
         # Replace AssetRef with valid LandscapeSplineSegment
         for component in self.components:
             for index, seg in enumerate(component.Properties.Segments):
                 if isinstance(seg, AssetRef):
-                    for segment in self.segments:
-                        if seg.ObjectName.endswith(f"{segment.Name}'"):
-                            component.Properties.Segments[index] = segment
-                            for point in segment.Properties.SplineInfo.Points:
-                                loc = (
-                                    point.OutVal + component.Properties.RelativeLocation
-                                )
-                                self.bound_min.X = min(self.bound_min.X, loc.X)
-                                self.bound_min.Y = min(self.bound_min.Y, loc.Y)
-                                self.bound_max.X = max(self.bound_max.X, loc.X)
-                                self.bound_max.Y = max(self.bound_max.Y, loc.Y)
-                            break
+                    segment = from_dict(
+                        LandscapeSplineSegment,
+                        seg.get_object(data),
+                        Config(convert_key=self.convert_key_explicit),
+                    )
+                    component.Properties.Segments[index] = segment
+                    for point in segment.Properties.SplineInfo.Points:
+                        loc = point.OutVal + component.Properties.RelativeLocation
+                        self.bound_min.X = min(self.bound_min.X, loc.X)
+                        self.bound_min.Y = min(self.bound_min.Y, loc.Y)
+                        self.bound_max.X = max(self.bound_max.X, loc.X)
+                        self.bound_max.Y = max(self.bound_max.Y, loc.Y)
+
             component.Properties.sort_segment()
 
-        # Replace AssetRef with valid SplineMeshComponent
-        for segment in self.segments:
-            for index, mesh in enumerate(segment.Properties.LocalMeshComponents):
-                if isinstance(mesh, AssetRef):
-                    for spline_mesh in self.spline_meshes:
-                        if mesh.ObjectName.endswith(f"{spline_mesh.Name}'"):
-                            segment.Properties.LocalMeshComponents[index] = spline_mesh
-                            break
-
-        paths = []
         processed = 0
 
         print("Bounds:", self.bound_min, self.bound_max)
         self.image_size = self.bound_max - self.bound_min
-        canvas = draw.Drawing(self.image_size.X, self.image_size.Y, origin="top-left")
+        padding = 5000
+        canvas = draw.Drawing(
+            self.image_size.X + padding, self.image_size.Y + padding, origin="top-left"
+        )
 
+        coords = []
         for i, component in enumerate(self.components):
-            coords = []
             random.shuffle(colors)
             path = draw.Path(
                 stroke_width=1000, stroke=colors[i], opacity=1, fill="none"
             )
             for index, segment in enumerate(component.Properties.Segments):
                 if isinstance(segment, LandscapeSplineSegment):
-                    # no_coll = all(
-                    #     (
-                    #         isinstance(mesh, SplineMeshComponent)
-                    #         and mesh.Properties.BodyInstance is None
-                    #     )
-                    #     for mesh in segment.Properties.LocalMeshComponents
-                    # )
                     if index == 0:
                         canvas.append(
                             draw.Text(
@@ -129,6 +187,7 @@ class DrawSplines:
                                     segment.Properties.SplineInfo.Points[0].OutVal
                                     + component.Properties.RelativeLocation
                                     - self.bound_min
+                                    + padding / 2
                                 ).ToVector2D(),
                                 fill=colors[i],
                                 text_anchor="middle",
@@ -140,9 +199,43 @@ class DrawSplines:
                             point.OutVal
                             + component.Properties.RelativeLocation
                             - self.bound_min
+                            + padding / 2
                         )
                         for point in segment.Properties.SplineInfo.Points
                     ]
+                    ctrl_scale = 0.5
+                    ctrl_start = (
+                        segment.Properties.SplineInfo.Points[0].LeaveTangent
+                        * ctrl_scale
+                        + locs[0]
+                    )
+                    ctrl_end = (
+                        locs[1]
+                        - segment.Properties.SplineInfo.Points[1].ArriveTangent
+                        * ctrl_scale
+                    )
+                    # canvas.append(
+                    #     draw.Line(
+                    #         *locs[0].ToVector2D(),
+                    #         *ctrl_start.ToVector2D(),
+                    #         stroke="red",
+                    #         stroke_width=100,
+                    #     )
+                    # )
+                    # canvas.append(
+                    #     draw.Line(
+                    #         *locs[1].ToVector2D(),
+                    #         *ctrl_end.ToVector2D(),
+                    #         stroke="blue",
+                    #         stroke_width=100,
+                    #     )
+                    # )
+                    # canvas.append(
+                    #     draw.Circle(*ctrl_start.ToVector2D(), r=200, fill="red")
+                    # )
+                    # canvas.append(
+                    #     draw.Circle(*ctrl_end.ToVector2D(), r=200, fill="blue")
+                    # )
                     prev_segment = (
                         component.Properties.Segments[index - 1] if index > 0 else None
                     )
@@ -153,22 +246,25 @@ class DrawSplines:
                         != segment.Properties.SplineInfo.Points[0].OutVal
                     ):
                         path.M(*locs[0].ToVector2D())
-                    path.L(*locs[1].ToVector2D())
-                    # canvas.append(
-                    #     draw.Text(
-                    #         str(index),
-                    #         1800,
-                    #         *loc_2d,
-                    #         fill="red",
-                    #         text_anchor="middle",
-                    #         center=True,
-                    #     )
-                    # )
+                        path.C(
+                            *ctrl_start.ToVector2D(),
+                            *ctrl_end.ToVector2D(),
+                            *locs[1].ToVector2D(),
+                        )
+                        # canvas.append(
+                        #     draw.Circle(*locs[0].ToVector2D(), r=200, fill="red")
+                        # )
+                    else:
+                        path.S(
+                            *ctrl_end.ToVector2D(),
+                            *locs[1].ToVector2D(),
+                        )
+                    coords.append(locs[1])
+                    # canvas.append(draw.Circle(*locs[1].ToVector2D(), r=200, fill="red"))
             canvas.insert(1, path)
             processed += 1
 
         # print(jsonpickle.encode(coords, unpicklable=False))
-        canvas.extend(paths)
         target_size = 256.0
         scale_fac = target_size / self.image_size.Y
         canvas.set_render_size(self.image_size.X * scale_fac, target_size)

@@ -62,18 +62,36 @@ class Vector3D(Vector2D):
             return Vector3D(self.X + B.X, self.Y + B.Y, self.Z + B.Z)
         elif isinstance(B, Vector2D):
             return Vector3D(self.X + B.X, self.Y + B.Y, self.Z)
+        elif isinstance(B, float) or isinstance(B, int):
+            return Vector3D(self.X + B, self.Y + B, self.Z + B)
+        else:
+            raise TypeError
+    
+    def __mul__(self, B):
+        if isinstance(B, Vector3D):
+            return(Vector3D(self.X * B.X, self.Y * B.Y, self.Z * B.Z))
+        if isinstance(B, float) or isinstance(B, int):
+            return(Vector3D(self.X * B, self.Y * B, self.Z * B))
         else:
             raise TypeError
 
     def __truediv__(self, B):
         if isinstance(B, Vector3D):
             return Vector3D(self.X / B.X, self.Y / B.Y, self.Z / B.Z)
-        elif isinstance(B, float):
+        elif isinstance(B, float) or isinstance(B, int):
             return Vector3D(self.X / B, self.Y / B, self.Z / B)
         return super().__truediv__(B)
 
     def ToVector2D(self):
         return Vector2D(self.X, self.Y)
+    
+    def scale_relative_to(self, B, scale = 1.0):
+        if isinstance(B, Vector3D):
+            offset = B - self
+            scaled = offset * scale
+            return self + scaled
+        else:
+            raise TypeError
 
 
 @dataclass
@@ -271,6 +289,9 @@ class AssetRef:
     ObjectName: str
     ObjectPath: str
 
+    def get_object(self, data: list):
+        index = int(self.ObjectPath.split(".")[-1])
+        return data[index]
 
 @dataclass
 class SplineConnection:
