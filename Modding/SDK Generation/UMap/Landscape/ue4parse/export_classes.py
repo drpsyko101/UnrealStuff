@@ -37,7 +37,7 @@ class Vector2D:
             return Vector2D(self.X / B, self.Y / B)
         else:
             return TypeError
-        
+
     def __str__(self) -> str:
         return f"(X: {self.X}, Y: {self.Y})"
 
@@ -70,12 +70,12 @@ class Vector3D(Vector2D):
             return Vector3D(self.X + B, self.Y + B, self.Z + B)
         else:
             raise TypeError
-    
+
     def __mul__(self, B):
         if isinstance(B, Vector3D):
-            return(Vector3D(self.X * B.X, self.Y * B.Y, self.Z * B.Z))
+            return Vector3D(self.X * B.X, self.Y * B.Y, self.Z * B.Z)
         if isinstance(B, float) or isinstance(B, int):
-            return(Vector3D(self.X * B, self.Y * B, self.Z * B))
+            return Vector3D(self.X * B, self.Y * B, self.Z * B)
         else:
             raise TypeError
 
@@ -88,8 +88,8 @@ class Vector3D(Vector2D):
 
     def ToVector2D(self):
         return Vector2D(self.X, self.Y)
-    
-    def scale_relative_to(self, B, scale = 1.0):
+
+    def scale_relative_to(self, B, scale=1.0):
         if isinstance(B, Vector3D):
             offset = B - self
             scaled = offset * scale
@@ -296,6 +296,7 @@ class AssetRef:
     def get_object(self, data: list):
         index = int(self.ObjectPath.split(".")[-1])
         return data[index]
+
 
 @dataclass
 class SplineConnection:
@@ -508,6 +509,7 @@ class SplineComponentProperty:
         for start_idx in starting_indices:
             chain = [start_idx]
             current_idx = start_idx
+            visited_indices = {start_idx}
 
             while True:
                 current_item = self.Segments[current_idx]
@@ -520,7 +522,13 @@ class SplineComponentProperty:
 
                     if out_tuple in in_value_map:
                         next_idx = in_value_map[out_tuple]
+
+                        # Check if we've already visited this index
+                        if next_idx in visited_indices:
+                            break
+
                         chain.append(next_idx)
+                        visited_indices.add(next_idx)
                         current_idx = next_idx
                     else:
                         # End of chain

@@ -10,7 +10,6 @@ from export_classes import (
     LandscapeSplinesComponent,
     LandscapeSplineSegment,
     Log,
-    SplineMeshComponent,
     Vector2D,
 )
 from multiprocessing import Process
@@ -25,8 +24,6 @@ class DrawSplines:
     bound_min = Vector2D(float("inf"), float("inf"))
     bound_max = Vector2D(-float("inf"), -float("inf"))
     components: list[LandscapeSplinesComponent] = []
-    segments: list[LandscapeSplineSegment] = []
-    spline_meshes: list[SplineMeshComponent] = []
     output_path = ""
 
     def __init__(self, input_path: str, output_path="", image_size="256x256") -> None:
@@ -153,7 +150,7 @@ class DrawSplines:
         try:
             with open("colors.json", encoding="utf8") as file:
                 colors = list(json.load(file).keys())
-        except:
+        except Exception:
             pass
 
         # parse data
@@ -170,8 +167,7 @@ class DrawSplines:
             if not spline_components:
                 continue
 
-            self.components.extend(spline_components)
-            for component in self.components:
+            for component in spline_components:
                 if component.Properties.Segments is None:
                     continue
                 segments = [
@@ -201,6 +197,15 @@ class DrawSplines:
 
                 component.Properties.sort_segment()
 
+                processed += 1
+                _logger.info(
+                    "Processed %i/%i",
+                    processed,
+                    len(self.components) + len(spline_components),
+                )
+
+            self.components.extend(spline_components)
+
         _logger.info("Bounds: Min=%s Max=%s", self.bound_min, self.bound_max)
         self.image_size = self.bound_max - self.bound_min
         padding = 5000
@@ -208,11 +213,12 @@ class DrawSplines:
             self.image_size.X + padding, self.image_size.Y + padding, origin="top-left"
         )
 
+        processed = 0
         if colors:
             random.shuffle(colors)
         for i, component in enumerate(self.components):
-            color = colors[i] if colors else "white"
-            path = draw.Path(stroke_width=1000, stroke=color, opacity=1, fill="none")
+            color = colors[i] if colors else "gray"
+            path = draw.Path(stroke_width=2000, stroke=color, opacity=1, fill="none")
             if component.Properties.Segments is None:
                 continue
             for index, segment in enumerate(component.Properties.Segments):
@@ -340,7 +346,9 @@ if __name__ == "__main__":
         help="Logging level to display in STDOUT",
     )
     args = parser.parse_args()
-    logging.basicConfig(level=args.log.value)
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s: %(message)s", level=args.log.value
+    )
     ds = DrawSplines(args.input, output_path=args.output, image_size=args.dimension)
     ds.process()
 
