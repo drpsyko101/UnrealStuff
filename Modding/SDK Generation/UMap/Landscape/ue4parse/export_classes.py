@@ -5,6 +5,7 @@ from numpy import asarray
 import numpy as np
 from enum import Enum
 import re
+import logging
 
 
 @dataclass
@@ -36,6 +37,9 @@ class Vector2D:
             return Vector2D(self.X / B, self.Y / B)
         else:
             return TypeError
+        
+    def __str__(self) -> str:
+        return f"(X: {self.X}, Y: {self.Y})"
 
     @staticmethod
     def min(A, B):
@@ -445,7 +449,7 @@ class SplineSegmentProperty:
     SplineInfo: SplineInfoData
     Points: list[SegmentPoint]
     Bounds: SplineBounds
-    LocalMeshComponents: list[AssetRef | SplineMeshComponent]
+    LocalMeshComponents: Optional[list[AssetRef | SplineMeshComponent]]
 
 
 @dataclass
@@ -457,12 +461,15 @@ class LandscapeSplineSegment(Export):
 
 @dataclass
 class SplineComponentProperty:
-    ControlPoints: list[AssetRef]
-    Segments: list[AssetRef | LandscapeSplineSegment]
+    ControlPoints: Optional[list[AssetRef]]
+    Segments: list[AssetRef | LandscapeSplineSegment] | list[LandscapeSplineSegment]
     RelativeLocation: Vector3D
 
     # Sort segments into connected chains
     def sort_segment(self):
+        if self.Segments is None:
+            return
+
         # Create dictionaries to map from InValue to index and OutValue to index
         in_value_map: dict[tuple[float, float, float], int] = {}
         out_value_map: dict[tuple[float, float, float], int] = {}
@@ -545,3 +552,15 @@ class LandscapeSplinesComponent(Export):
     Class: str
     Flags: str
     Properties: SplineComponentProperty
+
+
+class Log(Enum):
+    DEBUG = logging.DEBUG
+    INFO = logging.INFO
+    WARNING = logging.WARNING
+    WARN = logging.WARN
+    ERROR = logging.ERROR
+    CRITICAL = logging.CRITICAL
+
+    def __str__(self) -> str:
+        return self.name
