@@ -4,6 +4,7 @@ import json
 import logging
 import random
 import time
+from concurrent.futures import ProcessPoolExecutor
 from dacite import from_dict, Config
 from export_classes import (
     AssetRef,
@@ -12,7 +13,7 @@ from export_classes import (
     Log,
     Vector2D,
 )
-from multiprocessing import Process
+from multiprocessing import cpu_count
 from pathlib import Path
 
 _logger = logging.getLogger(__name__)
@@ -24,15 +25,18 @@ class DrawSplines:
     bound_min = Vector2D(float("inf"), float("inf"))
     bound_max = Vector2D(-float("inf"), -float("inf"))
     output_path = ""
+    workers = None
 
-    def __init__(self, input_path: str, output_path="", image_size="256x256") -> None:
+    def __init__(
+        self, input_path: str, output_path="", image_size="256x256", workers=0
+    ) -> None:
         self.input_path = input_path
         if output_path:
             self.output_path = output_path
         else:
             self.output_path = input_path.replace(".json", ".svg")
         self.image_size = Vector2D(*list(map(float, image_size.split("x"))))
-        pass
+        self.workers = workers or cpu_count()
 
     @staticmethod
     def convert_key_explicit(key: str) -> str:
@@ -129,7 +133,7 @@ class DrawSplines:
         # Create the sorted data
         self.spline_meshes = [self.spline_meshes[i] for i in ordered_indices]
 
-    def parse_data(self, data: list) -> list[LandscapeSplinesComponent]:
+    def _parse_data(self, data: list) -> list[LandscapeSplinesComponent]:
         """Parse array into known UE objects"""
         spline_components = [
             from_dict(LandscapeSplinesComponent, obj)
@@ -160,21 +164,11 @@ class DrawSplines:
             if not segments:
                 continue
 
-            locations = [
-                point.OutVal + component.Properties.RelativeLocation
-                for seg in component.Properties.Segments
-                for point in seg.Properties.SplineInfo.Points
-            ]
-            self.bound_min.X = min(self.bound_min.X, *[v.X for v in locations])
-            self.bound_min.Y = min(self.bound_min.Y, *[v.Y for v in locations])
-            self.bound_max.X = max(self.bound_max.X, *[v.X for v in locations])
-            self.bound_max.Y = max(self.bound_max.Y, *[v.Y for v in locations])
-
             component.Properties.sort_segment()
 
         return spline_components
 
-    def plot_path(self, components: list[LandscapeSplinesComponent], colors=[]):
+    def _plot_path(self, components: list[LandscapeSplinesComponent], colors=[]):
         _logger.info("Bounds: Min=%s Max=%s", self.bound_min, self.bound_max)
         self.image_size = self.bound_max - self.bound_min
         padding = 5000
@@ -192,7 +186,7 @@ class DrawSplines:
                 continue
             for index, segment in enumerate(component.Properties.Segments):
                 if isinstance(segment, LandscapeSplineSegment):
-                    if index == 0 and colors:
+                    if index == 0 and _logger.isEnabledFor(Log.DEBUG.value):
                         canvas.append(
                             draw.Text(
                                 str(component.Outer),
@@ -203,7 +197,7 @@ class DrawSplines:
                                     - self.bound_min
                                     + padding / 2
                                 ).ToVector2D(),
-                                fill=colors[i],
+                                fill=color,
                                 text_anchor="middle",
                                 center=True,
                             )
@@ -228,28 +222,29 @@ class DrawSplines:
                         - segment.Properties.SplineInfo.Points[1].ArriveTangent
                         * ctrl_scale
                     )
-                    # canvas.append(
-                    #     draw.Line(
-                    #         *locs[0].ToVector2D(),
-                    #         *ctrl_start.ToVector2D(),
-                    #         stroke="red",
-                    #         stroke_width=100,
-                    #     )
-                    # )
-                    # canvas.append(
-                    #     draw.Line(
-                    #         *locs[1].ToVector2D(),
-                    #         *ctrl_end.ToVector2D(),
-                    #         stroke="blue",
-                    #         stroke_width=100,
-                    #     )
-                    # )
-                    # canvas.append(
-                    #     draw.Circle(*ctrl_start.ToVector2D(), r=200, fill="red")
-                    # )
-                    # canvas.append(
-                    #     draw.Circle(*ctrl_end.ToVector2D(), r=200, fill="blue")
-                    # )
+                    if _logger.isEnabledFor(Log.DEBUG.value):
+                        canvas.append(
+                            draw.Line(
+                                *locs[0].ToVector2D(),
+                                *ctrl_start.ToVector2D(),
+                                stroke="red",
+                                stroke_width=100,
+                            )
+                        )
+                        canvas.append(
+                            draw.Line(
+                                *locs[1].ToVector2D(),
+                                *ctrl_end.ToVector2D(),
+                                stroke="blue",
+                                stroke_width=100,
+                            )
+                        )
+                        canvas.append(
+                            draw.Circle(*ctrl_start.ToVector2D(), r=200, fill="red")
+                        )
+                        canvas.append(
+                            draw.Circle(*ctrl_end.ToVector2D(), r=200, fill="blue")
+                        )
                     prev_segment = (
                         component.Properties.Segments[index - 1] if index > 0 else None
                     )
@@ -265,43 +260,59 @@ class DrawSplines:
                             *ctrl_end.ToVector2D(),
                             *locs[1].ToVector2D(),
                         )
-                        # canvas.append(
-                        #     draw.Circle(*locs[0].ToVector2D(), r=200, fill="red")
-                        # )
+                        if _logger.isEnabledFor(Log.DEBUG.value):
+                            canvas.append(
+                                draw.Circle(*locs[0].ToVector2D(), r=200, fill="red")
+                            )
                     else:
                         path.S(
                             *ctrl_end.ToVector2D(),
                             *locs[1].ToVector2D(),
                         )
-                    # canvas.append(draw.Circle(*locs[1].ToVector2D(), r=200, fill="red"))
+                    if _logger.isEnabledFor(Log.DEBUG.value):
+                        canvas.append(
+                            draw.Circle(*locs[1].ToVector2D(), r=200, fill="red")
+                        )
             canvas.insert(1, path)
             processed += 1
 
+        _logger.info("Generated %i paths", processed)
         target_size = 256.0
         scale_fac = target_size / self.image_size.Y
         canvas.set_render_size(self.image_size.X * scale_fac, target_size)
         canvas.save_svg(self.output_path)
-        _logger.info("Generated %i components", processed)
+        _logger.info("SVG saved at %s", Path(self.output_path).absolute())
+
+    def _process_file(self, file_path: Path) -> list:
+        try:
+            with file_path.open(encoding="utf8") as content:
+                raw_data = json.load(content)
+                return self._parse_data(raw_data)
+        except Exception as e:
+            _logger.error("Error processing %s: %s", file_path, e)
+            return []
+
+    def _collect_file_paths(self) -> list[Path]:
+        file_paths = []
+        main_file_path = Path(self.input_path)
+        file_paths.append(main_file_path)
+
+        basename = main_file_path.stem
+        generated_path = main_file_path.parent.joinpath(basename, "_Generated_")
+        if generated_path.exists():
+            file_paths.extend(list(generated_path.glob("*.json")))
+
+        return file_paths
 
     def process(self):
         components: list[LandscapeSplinesComponent] = []
-        file_path = Path(self.input_path)
-        basename = file_path.stem
-        workers = 4
-        with open(self.input_path, encoding="utf8") as content:
-            raw_data = json.load(content)
-            components.extend(self.parse_data(raw_data))
-            _logger.info("Loaded data from %s", basename)
-        generated_path = file_path.parent.joinpath(basename, "_Generated_")
-        if generated_path.exists():
-            generated_num = 0
-            for file in generated_path.glob("*.json"):
-                with file.open(encoding="utf8") as content:
-                    raw_data = json.load(content)
-                    components.extend(self.parse_data(raw_data))
-                generated_num += 1
-                _logger.info("Generated files processed: %i", generated_num)
-            _logger.info("Loaded %i generated files for %s", generated_num, basename)
+        file_paths = self._collect_file_paths()
+
+        with ProcessPoolExecutor(max_workers=self.workers) as executor:
+            results = list(executor.map(self._process_file, file_paths))
+
+            for result in results:
+                components.extend(result)
 
         colors: list[str] = []
         try:
@@ -310,11 +321,23 @@ class DrawSplines:
         except Exception:
             pass
 
-        self.plot_path(components, colors)
+        locations = [
+            point.OutVal + component.Properties.RelativeLocation
+            for component in components
+            for segment in component.Properties.Segments
+            if isinstance(segment, LandscapeSplineSegment)
+            for point in segment.Properties.SplineInfo.Points
+        ]
+        self.bound_min.X = min(self.bound_min.X, *[v.X for v in locations])
+        self.bound_min.Y = min(self.bound_min.Y, *[v.Y for v in locations])
+        self.bound_max.X = max(self.bound_max.X, *[v.X for v in locations])
+        self.bound_max.Y = max(self.bound_max.Y, *[v.Y for v in locations])
+
+        self._plot_path(components, colors)
 
 
 if __name__ == "__main__":
-    start_time = time.time()
+    start_time = time.perf_counter()
     parser = argparse.ArgumentParser(description="UE landscape SVG exporter")
     parser.add_argument(
         "--input", "-i", type=str, required=True, help="Path to the map JSON file"
@@ -343,11 +366,24 @@ if __name__ == "__main__":
         default="INFO",
         help="Logging level to display in STDOUT",
     )
+    parser.add_argument(
+        "--worker",
+        "-w",
+        type=int,
+        required=False,
+        default=0,
+        help="Amount of CPU thread to use. Setting it to 0 will use all available CPU threads.",
+    )
     args = parser.parse_args()
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s: %(message)s", level=args.log.value
     )
-    ds = DrawSplines(args.input, output_path=args.output, image_size=args.dimension)
+    ds = DrawSplines(
+        args.input,
+        output_path=args.output,
+        image_size=args.dimension,
+        workers=args.worker,
+    )
     ds.process()
 
-    _logger.info("Process completed in %f seconds", time.time() - start_time)
+    _logger.info("Process completed in %f seconds", time.perf_counter() - start_time)

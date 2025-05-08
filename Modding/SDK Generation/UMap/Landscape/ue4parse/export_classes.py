@@ -33,7 +33,7 @@ class Vector2D:
     def __truediv__(self, B):
         if isinstance(B, Vector2D):
             return Vector2D(self.X / B.X, self.Y / B.Y)
-        elif isinstance(B, float) or isinstance(B, int):
+        elif isinstance(B, (float, int)):
             return Vector2D(self.X / B, self.Y / B)
         else:
             return TypeError
@@ -66,7 +66,7 @@ class Vector3D(Vector2D):
             return Vector3D(self.X + B.X, self.Y + B.Y, self.Z + B.Z)
         elif isinstance(B, Vector2D):
             return Vector3D(self.X + B.X, self.Y + B.Y, self.Z)
-        elif isinstance(B, float) or isinstance(B, int):
+        elif isinstance(B, (float, int)):
             return Vector3D(self.X + B, self.Y + B, self.Z + B)
         else:
             raise TypeError
@@ -74,7 +74,7 @@ class Vector3D(Vector2D):
     def __mul__(self, B):
         if isinstance(B, Vector3D):
             return Vector3D(self.X * B.X, self.Y * B.Y, self.Z * B.Z)
-        if isinstance(B, float) or isinstance(B, int):
+        if isinstance(B, (float, int)):
             return Vector3D(self.X * B, self.Y * B, self.Z * B)
         else:
             raise TypeError
@@ -82,7 +82,7 @@ class Vector3D(Vector2D):
     def __truediv__(self, B):
         if isinstance(B, Vector3D):
             return Vector3D(self.X / B.X, self.Y / B.Y, self.Z / B.Z)
-        elif isinstance(B, float) or isinstance(B, int):
+        elif isinstance(B, (float, int)):
             return Vector3D(self.X / B, self.Y / B, self.Z / B)
         return super().__truediv__(B)
 
