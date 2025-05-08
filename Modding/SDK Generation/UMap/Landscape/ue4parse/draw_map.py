@@ -23,7 +23,6 @@ class DrawSplines:
     image_size = Vector2D(0, 0)
     bound_min = Vector2D(float("inf"), float("inf"))
     bound_max = Vector2D(-float("inf"), -float("inf"))
-    components: list[LandscapeSplinesComponent] = []
     output_path = ""
 
     def __init__(self, input_path: str, output_path="", image_size="256x256") -> None:
@@ -130,82 +129,52 @@ class DrawSplines:
         # Create the sorted data
         self.spline_meshes = [self.spline_meshes[i] for i in ordered_indices]
 
-    def process(self):
-        data: dict[str, list] = {}
-        file_path = Path(self.input_path)
-        basename = file_path.stem
-        with open(self.input_path, encoding="utf8") as file:
-            data[basename] = json.load(file)
-            _logger.info("Loaded data from %s", basename)
-        generated_path = file_path.parent.joinpath(basename, "_Generated_")
-        if generated_path.exists():
-            generated_num = 0
-            for file in generated_path.glob("*.json"):
-                with file.open(encoding="utf8") as content:
-                    data[file.stem] = json.load(content)
-                generated_num += 1
-            _logger.info("Loaded %i generated files for %s", generated_num, basename)
+    def parse_data(self, data: list) -> list[LandscapeSplinesComponent]:
+        """Parse array into known UE objects"""
+        spline_components = [
+            from_dict(LandscapeSplinesComponent, obj)
+            for obj in data
+            if obj["Type"] == "LandscapeSplinesComponent"
+            and "Segments" in obj["Properties"]  # Make sure it has valid segments
+        ]
 
-        colors: list[str] = []
-        try:
-            with open("colors.json", encoding="utf8") as file:
-                colors = list(json.load(file).keys())
-        except Exception:
-            pass
+        # Skip empty spline components
+        if not spline_components:
+            return []
 
-        # parse data
-        processed = 0
-        for value in data.values():
-            spline_components = [
-                from_dict(LandscapeSplinesComponent, obj)
-                for obj in value
-                if obj["Type"] == "LandscapeSplinesComponent"
-                and "Segments" in obj["Properties"]
+        for component in spline_components:
+            if component.Properties.Segments is None:
+                continue
+            segments = [
+                from_dict(
+                    LandscapeSplineSegment,
+                    seg.get_object(data),
+                    Config(convert_key=self.convert_key_explicit),
+                )
+                for seg in component.Properties.Segments
+                if isinstance(seg, AssetRef)
             ]
+            component.Properties.Segments = segments
 
-            # Skip empty spline components
-            if not spline_components:
+            # Skip empty segments
+            if not segments:
                 continue
 
-            for component in spline_components:
-                if component.Properties.Segments is None:
-                    continue
-                segments = [
-                    from_dict(
-                        LandscapeSplineSegment,
-                        seg.get_object(value),
-                        Config(convert_key=self.convert_key_explicit),
-                    )
-                    for seg in component.Properties.Segments
-                    if isinstance(seg, AssetRef)
-                ]
-                component.Properties.Segments = segments
+            locations = [
+                point.OutVal + component.Properties.RelativeLocation
+                for seg in component.Properties.Segments
+                for point in seg.Properties.SplineInfo.Points
+            ]
+            self.bound_min.X = min(self.bound_min.X, *[v.X for v in locations])
+            self.bound_min.Y = min(self.bound_min.Y, *[v.Y for v in locations])
+            self.bound_max.X = max(self.bound_max.X, *[v.X for v in locations])
+            self.bound_max.Y = max(self.bound_max.Y, *[v.Y for v in locations])
 
-                # Skip empty segments
-                if not segments:
-                    continue
+            component.Properties.sort_segment()
 
-                locations = [
-                    point.OutVal + component.Properties.RelativeLocation
-                    for seg in component.Properties.Segments
-                    for point in seg.Properties.SplineInfo.Points
-                ]
-                self.bound_min.X = min(self.bound_min.X, *[v.X for v in locations])
-                self.bound_min.Y = min(self.bound_min.Y, *[v.Y for v in locations])
-                self.bound_max.X = max(self.bound_max.X, *[v.X for v in locations])
-                self.bound_max.Y = max(self.bound_max.Y, *[v.Y for v in locations])
+        return spline_components
 
-                component.Properties.sort_segment()
-
-                processed += 1
-                _logger.info(
-                    "Processed %i/%i",
-                    processed,
-                    len(self.components) + len(spline_components),
-                )
-
-            self.components.extend(spline_components)
-
+    def plot_path(self, components: list[LandscapeSplinesComponent], colors=[]):
         _logger.info("Bounds: Min=%s Max=%s", self.bound_min, self.bound_max)
         self.image_size = self.bound_max - self.bound_min
         padding = 5000
@@ -216,7 +185,7 @@ class DrawSplines:
         processed = 0
         if colors:
             random.shuffle(colors)
-        for i, component in enumerate(self.components):
+        for i, component in enumerate(components):
             color = colors[i] if colors else "gray"
             path = draw.Path(stroke_width=2000, stroke=color, opacity=1, fill="none")
             if component.Properties.Segments is None:
@@ -313,6 +282,35 @@ class DrawSplines:
         canvas.set_render_size(self.image_size.X * scale_fac, target_size)
         canvas.save_svg(self.output_path)
         _logger.info("Generated %i components", processed)
+
+    def process(self):
+        components: list[LandscapeSplinesComponent] = []
+        file_path = Path(self.input_path)
+        basename = file_path.stem
+        workers = 4
+        with open(self.input_path, encoding="utf8") as content:
+            raw_data = json.load(content)
+            components.extend(self.parse_data(raw_data))
+            _logger.info("Loaded data from %s", basename)
+        generated_path = file_path.parent.joinpath(basename, "_Generated_")
+        if generated_path.exists():
+            generated_num = 0
+            for file in generated_path.glob("*.json"):
+                with file.open(encoding="utf8") as content:
+                    raw_data = json.load(content)
+                    components.extend(self.parse_data(raw_data))
+                generated_num += 1
+                _logger.info("Generated files processed: %i", generated_num)
+            _logger.info("Loaded %i generated files for %s", generated_num, basename)
+
+        colors: list[str] = []
+        try:
+            with open("colors.json", encoding="utf8") as file:
+                colors = list(json.load(file).keys())
+        except Exception:
+            pass
+
+        self.plot_path(components, colors)
 
 
 if __name__ == "__main__":

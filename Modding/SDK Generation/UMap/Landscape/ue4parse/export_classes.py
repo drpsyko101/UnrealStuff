@@ -294,6 +294,7 @@ class AssetRef:
     ObjectPath: str
 
     def get_object(self, data: list):
+        """Get the actual raw object in the data array"""
         index = int(self.ObjectPath.split(".")[-1])
         return data[index]
 
