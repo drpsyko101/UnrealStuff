@@ -451,7 +451,7 @@ class SplineSegmentProperty:
     SplineInfo: SplineInfoData
     Points: list[SegmentPoint]
     Bounds: SplineBounds
-    LocalMeshComponents: Optional[list[AssetRef | SplineMeshComponent]]
+    LocalMeshComponents: Optional[list[AssetRef] | list[SplineMeshComponent]]
 
 
 @dataclass

@@ -11,6 +11,7 @@ from export_classes import (
     LandscapeSplinesComponent,
     LandscapeSplineSegment,
     Log,
+    SplineMeshComponent,
     Vector2D,
 )
 from multiprocessing import cpu_count
@@ -164,6 +165,19 @@ class DrawSplines:
             if not segments:
                 continue
 
+            for segment in segments:
+                if segment.Properties.LocalMeshComponents is None:
+                    continue
+                mesh_components = [
+                    from_dict(SplineMeshComponent, comp.get_object(data))
+                    for comp in segment.Properties.LocalMeshComponents
+                    if isinstance(comp, AssetRef)
+                ]
+                if not mesh_components:
+                    continue
+
+                segment.Properties.LocalMeshComponents = mesh_components
+
             component.Properties.sort_segment()
 
         return spline_components
@@ -180,7 +194,34 @@ class DrawSplines:
         if colors:
             random.shuffle(colors)
         for i, component in enumerate(components):
-            color = colors[i] if colors else "gray"
+            is_road = any(
+                [
+                    mesh.Properties.StaticMesh is not None
+                    and "road" in mesh.Properties.StaticMesh.ObjectName.lower()
+                    and "dirt" not in mesh.Properties.StaticMesh.ObjectName.lower()
+                    for seg in component.Properties.Segments
+                    if isinstance(seg, LandscapeSplineSegment)
+                    and seg.Properties.LocalMeshComponents is not None
+                    for mesh in seg.Properties.LocalMeshComponents
+                    if isinstance(mesh, SplineMeshComponent)
+                ]
+            )
+            is_river = any(
+                [
+                    mesh.Properties.StaticMesh is not None
+                    and "river" in mesh.Properties.StaticMesh.ObjectName.lower()
+                    for seg in component.Properties.Segments
+                    if isinstance(seg, LandscapeSplineSegment)
+                    and seg.Properties.LocalMeshComponents is not None
+                    for mesh in seg.Properties.LocalMeshComponents
+                    if isinstance(mesh, SplineMeshComponent)
+                ]
+            )
+            color = (
+                colors[i]
+                if colors
+                else "white" if is_road else "aqua" if is_river else "gray"
+            )
             path = draw.Path(stroke_width=2000, stroke=color, opacity=1, fill="none")
             if component.Properties.Segments is None:
                 continue
@@ -307,6 +348,7 @@ class DrawSplines:
     def process(self):
         components: list[LandscapeSplinesComponent] = []
         file_paths = self._collect_file_paths()
+        _logger.info("Collected %i files to process", len(file_paths))
 
         with ProcessPoolExecutor(max_workers=self.workers) as executor:
             results = list(executor.map(self._process_file, file_paths))
