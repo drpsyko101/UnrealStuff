@@ -21,23 +21,22 @@ _logger = logging.getLogger(__name__)
 
 
 class DrawSplines:
-    input_path = ""
-    image_size = Vector2D(0, 0)
-    bound_min = Vector2D(float("inf"), float("inf"))
-    bound_max = Vector2D(-float("inf"), -float("inf"))
-    output_path = ""
-    workers = None
-
     def __init__(
-        self, input_path: str, output_path="", image_size="256x256", workers=0
+        self,
+        input_path: str,
+        output_path="",
+        image_size="256x256",
+        workers=0,
+        colors_path="",
     ) -> None:
         self.input_path = input_path
-        if output_path:
-            self.output_path = output_path
-        else:
-            self.output_path = input_path.replace(".json", ".svg")
+        self.output_path = output_path or input_path.replace(".json", ".svg")
         self.image_size = Vector2D(*list(map(float, image_size.split("x"))))
         self.workers = workers or cpu_count()
+        self.image_size = Vector2D(0, 0)
+        self.bound_min = Vector2D(float("inf"), float("inf"))
+        self.bound_max = Vector2D(-float("inf"), -float("inf"))
+        self.colors_path = colors_path
 
     @staticmethod
     def convert_key_explicit(key: str) -> str:
@@ -47,92 +46,6 @@ class DrawSplines:
             case "Connections[1]":
                 return "ConnectionEnd"
         return key
-
-    def sort_spline_mesh(self):
-        # Create dictionaries to map from InValue to index and OutValue to index
-        in_value_map: dict[tuple[float, float, float], int] = {}
-        out_value_map: dict[tuple[float, float, float], int] = {}
-
-        for i, item in enumerate(self.spline_meshes):
-            # Convert the dictionaries to tuples for hashability
-            in_tuple = (
-                item.Properties.SplineParams.StartPos.X,
-                item.Properties.SplineParams.StartPos.Y,
-                item.Properties.SplineParams.StartPos.Z,
-            )
-            out_tuple = (
-                item.Properties.SplineParams.EndPos.X,
-                item.Properties.SplineParams.EndPos.Y,
-                item.Properties.SplineParams.EndPos.Z,
-            )
-
-            # Calculate bounds from spline mesh components as well
-            start_pos = (
-                item.Properties.SplineParams.StartPos + item.Properties.RelativeLocation
-            )
-            end_pos = (
-                item.Properties.SplineParams.EndPos + item.Properties.RelativeLocation
-            )
-            self.bound_min.X = min(self.bound_min.X, start_pos.X, end_pos.X)
-            self.bound_min.Y = min(self.bound_min.Y, start_pos.Y, end_pos.Y)
-            self.bound_max.X = max(self.bound_max.X, start_pos.X, end_pos.X)
-            self.bound_max.Y = max(self.bound_max.Y, start_pos.Y, end_pos.Y)
-
-            in_value_map[in_tuple] = i
-            out_value_map[out_tuple] = i
-
-        # Find starting points (points that have an InValue that doesn't match any OutValue)
-        starting_indices: list[int] = []
-        for i, item in enumerate(self.spline_meshes):
-            in_tuple = (
-                item.Properties.SplineParams.StartPos.X,
-                item.Properties.SplineParams.StartPos.Y,
-                item.Properties.SplineParams.StartPos.Z,
-            )
-            if in_tuple not in out_value_map:
-                starting_indices.append(i)
-
-        # Create chains starting from each starting point
-        chains: list[list[int]] = []
-        for start_idx in starting_indices:
-            chain = [start_idx]
-            current_idx = start_idx
-
-            while True:
-                current_item = self.spline_meshes[current_idx]
-                out_tuple = (
-                    current_item.Properties.SplineParams.EndPos.X,
-                    current_item.Properties.SplineParams.EndPos.Y,
-                    current_item.Properties.SplineParams.EndPos.Z,
-                )
-
-                if out_tuple in in_value_map:
-                    next_idx = in_value_map[out_tuple]
-                    chain.append(next_idx)
-                    current_idx = next_idx
-                else:
-                    # End of chain
-                    break
-            else:
-                break
-
-            chains.append(chain)
-
-        # Sort chains by length (longest first)
-        chains.sort(key=len, reverse=True)
-
-        # Combine all chains into a single ordered list
-        ordered_indices: list[int] = []
-        for chain in chains:
-            ordered_indices.extend(chain)
-
-        # Find any points not included in any chain
-        all_indices = set(range(len(self.spline_meshes)))
-        orphaned_indices = list(all_indices - set(ordered_indices))
-        ordered_indices.extend(orphaned_indices)
-
-        # Create the sorted data
-        self.spline_meshes = [self.spline_meshes[i] for i in ordered_indices]
 
     def _parse_data(self, data: list) -> list[LandscapeSplinesComponent]:
         """Parse array into known UE objects"""
@@ -182,7 +95,9 @@ class DrawSplines:
 
         return spline_components
 
-    def _plot_path(self, components: list[LandscapeSplinesComponent], colors=[]):
+    def _plot_path(
+        self, components: list[LandscapeSplinesComponent], colors: dict[str, str] = {}
+    ):
         _logger.info("Bounds: Min=%s Max=%s", self.bound_min, self.bound_max)
         self.image_size = self.bound_max - self.bound_min
         padding = 5000
@@ -190,59 +105,19 @@ class DrawSplines:
             self.image_size.X + padding, self.image_size.Y + padding, origin="top-left"
         )
 
+        color = "gray"
         processed = 0
-        if colors:
-            random.shuffle(colors)
         for i, component in enumerate(components):
-            is_road = any(
-                [
-                    mesh.Properties.StaticMesh is not None
-                    and "road" in mesh.Properties.StaticMesh.ObjectName.lower()
-                    and "dirt" not in mesh.Properties.StaticMesh.ObjectName.lower()
-                    for seg in component.Properties.Segments
-                    if isinstance(seg, LandscapeSplineSegment)
-                    and seg.Properties.LocalMeshComponents is not None
-                    for mesh in seg.Properties.LocalMeshComponents
-                    if isinstance(mesh, SplineMeshComponent)
-                ]
-            )
-            is_river = any(
-                [
-                    mesh.Properties.StaticMesh is not None
-                    and "river" in mesh.Properties.StaticMesh.ObjectName.lower()
-                    for seg in component.Properties.Segments
-                    if isinstance(seg, LandscapeSplineSegment)
-                    and seg.Properties.LocalMeshComponents is not None
-                    for mesh in seg.Properties.LocalMeshComponents
-                    if isinstance(mesh, SplineMeshComponent)
-                ]
-            )
-            color = (
-                colors[i]
-                if colors
-                else "white" if is_road else "aqua" if is_river else "gray"
-            )
-            path = draw.Path(stroke_width=2000, stroke=color, opacity=1, fill="none")
-            if component.Properties.Segments is None:
+            # Skip invalid segments
+            if (
+                component.Properties.Segments is None
+                or not component.Properties.Segments
+            ):
                 continue
+
+            path: draw.Path | None = None
             for index, segment in enumerate(component.Properties.Segments):
                 if isinstance(segment, LandscapeSplineSegment):
-                    if index == 0 and _logger.isEnabledFor(Log.DEBUG.value):
-                        canvas.append(
-                            draw.Text(
-                                str(component.Outer),
-                                1800,
-                                *(
-                                    segment.Properties.SplineInfo.Points[0].OutVal
-                                    + component.Properties.RelativeLocation
-                                    - self.bound_min
-                                    + padding / 2
-                                ).ToVector2D(),
-                                fill=color,
-                                text_anchor="middle",
-                                center=True,
-                            )
-                        )
                     locs = [
                         (
                             point.OutVal
@@ -289,12 +164,39 @@ class DrawSplines:
                     prev_segment = (
                         component.Properties.Segments[index - 1] if index > 0 else None
                     )
+
+                    mesh_name = (
+                        segment.Properties.LocalMeshComponents[
+                            0
+                        ].Properties.StaticMesh.ObjectName
+                        if segment.Properties.LocalMeshComponents is not None
+                        and isinstance(
+                            segment.Properties.LocalMeshComponents[0],
+                            SplineMeshComponent,
+                        )
+                        and segment.Properties.LocalMeshComponents[
+                            0
+                        ].Properties.StaticMesh
+                        is not None
+                        else ""
+                    )
+
+                    color = colors[mesh_name] or color
+
+                    # Check if we need to start a new path
                     if index == 0 or (
                         prev_segment is not None
                         and isinstance(prev_segment, LandscapeSplineSegment)
                         and prev_segment.Properties.SplineInfo.Points[1].OutVal
                         != segment.Properties.SplineInfo.Points[0].OutVal
                     ):
+                        # Insert previous path if valid
+                        if path is not None:
+                            canvas.insert(1, path)
+
+                        path = draw.Path(
+                            stroke_width=2000, stroke=color, opacity=1, fill="none"
+                        )
                         path.M(*locs[0].ToVector2D())
                         path.C(
                             *ctrl_start.ToVector2D(),
@@ -303,18 +205,38 @@ class DrawSplines:
                         )
                         if _logger.isEnabledFor(Log.DEBUG.value):
                             canvas.append(
+                                draw.Text(
+                                    str(component.Outer),
+                                    1800,
+                                    *(
+                                        segment.Properties.SplineInfo.Points[0].OutVal
+                                        + component.Properties.RelativeLocation
+                                        - self.bound_min
+                                        + padding / 2
+                                    ).ToVector2D(),
+                                    fill=color,
+                                    text_anchor="middle",
+                                    center=True,
+                                )
+                            )
+                            canvas.append(
                                 draw.Circle(*locs[0].ToVector2D(), r=200, fill="red")
                             )
                     else:
-                        path.S(
-                            *ctrl_end.ToVector2D(),
-                            *locs[1].ToVector2D(),
-                        )
+                        if path is not None:
+                            path.S(
+                                *ctrl_end.ToVector2D(),
+                                *locs[1].ToVector2D(),
+                            )
                     if _logger.isEnabledFor(Log.DEBUG.value):
                         canvas.append(
                             draw.Circle(*locs[1].ToVector2D(), r=200, fill="red")
                         )
-            canvas.insert(1, path)
+
+            # Insert final path if valid
+            if path is not None:
+                canvas.insert(1, path)
+
             processed += 1
 
         _logger.info("Generated %i paths", processed)
@@ -356,10 +278,10 @@ class DrawSplines:
             for result in results:
                 components.extend(result)
 
-        colors: list[str] = []
+        colors: dict[str, str] = {}
         try:
             with open("colors.json", encoding="utf8") as file:
-                colors = list(json.load(file).keys())
+                colors = json.load(file)
         except Exception:
             pass
 
@@ -416,6 +338,13 @@ if __name__ == "__main__":
         default=0,
         help="Amount of CPU thread to use. Setting it to 0 will use all available CPU threads.",
     )
+    parser.add_argument(
+        "--color",
+        "-c",
+        type=str,
+        required=False,
+        help="Path to the mesh colors JSON file",
+    )
     args = parser.parse_args()
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s: %(message)s", level=args.log.value
@@ -425,6 +354,7 @@ if __name__ == "__main__":
         output_path=args.output,
         image_size=args.dimension,
         workers=args.worker,
+        colors_path=args.color,
     )
     ds.process()
 
