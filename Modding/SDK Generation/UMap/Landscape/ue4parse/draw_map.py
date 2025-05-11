@@ -25,21 +25,32 @@ class DrawSplines:
         self,
         input_path: str,
         output_path="",
-        image_size="256x256",
+        image_size="",
+        offset="",
+        scale=0,
         workers=0,
         colors_path="",
     ) -> None:
         self.input_path = input_path
         self.output_path = output_path or input_path.replace(".json", ".svg")
-        self.image_size = Vector2D(*list(map(float, image_size.split("x"))))
+        self.image_size = (
+            Vector2D(*list(map(float, image_size.split(","))))
+            if image_size
+            else Vector2D.zeroVector()
+        )
+        self.offset = (
+            Vector2D(*list(map(float, offset.split(","))))
+            if offset
+            else Vector2D.zeroVector()
+        )
+        self.scale = scale
         self.workers = workers or cpu_count()
-        self.image_size = Vector2D(0, 0)
         self.bound_min = Vector2D(float("inf"), float("inf"))
         self.bound_max = Vector2D(-float("inf"), -float("inf"))
         self.colors_path = colors_path
 
     @staticmethod
-    def convert_key_explicit(key: str) -> str:
+    def _convert_key_explicit(key: str) -> str:
         match key:
             case "Connections":
                 return "ConnectionStart"
@@ -67,7 +78,7 @@ class DrawSplines:
                 from_dict(
                     LandscapeSplineSegment,
                     seg.get_object(data),
-                    Config(convert_key=self.convert_key_explicit),
+                    Config(convert_key=self._convert_key_explicit),
                 )
                 for seg in component.Properties.Segments
                 if isinstance(seg, AssetRef)
@@ -99,11 +110,17 @@ class DrawSplines:
         self, components: list[LandscapeSplinesComponent], colors: dict[str, str] = {}
     ):
         _logger.info("Bounds: Min=%s Max=%s", self.bound_min, self.bound_max)
-        self.image_size = self.bound_max - self.bound_min
-        padding = 5000
-        canvas = draw.Drawing(
-            self.image_size.X + padding, self.image_size.Y + padding, origin="top-left"
+        self.image_size = (
+            (self.bound_max - self.bound_min)
+            if self.image_size == Vector2D.zeroVector()
+            else self.image_size
         )
+        self.offset = (
+            self.bound_min
+            if self.offset == Vector2D.zeroVector()
+            else self.offset
+        )
+        canvas = draw.Drawing(self.image_size.X, self.image_size.Y, origin="top-left")
 
         color = "gray"
         processed = 0
@@ -122,8 +139,7 @@ class DrawSplines:
                         (
                             point.OutVal
                             + component.Properties.RelativeLocation
-                            - self.bound_min
-                            + padding / 2
+                            - self.offset
                         )
                         for point in segment.Properties.SplineInfo.Points
                     ]
@@ -181,7 +197,7 @@ class DrawSplines:
                         else ""
                     )
 
-                    color = colors[mesh_name] or color
+                    color = colors[mesh_name] if colors else color
 
                     # Check if we need to start a new path
                     if index == 0 or (
@@ -211,8 +227,7 @@ class DrawSplines:
                                     *(
                                         segment.Properties.SplineInfo.Points[0].OutVal
                                         + component.Properties.RelativeLocation
-                                        - self.bound_min
-                                        + padding / 2
+                                        - self.offset
                                     ).ToVector2D(),
                                     fill=color,
                                     text_anchor="middle",
@@ -240,9 +255,8 @@ class DrawSplines:
             processed += 1
 
         _logger.info("Generated %i paths", processed)
-        target_size = 256.0
-        scale_fac = target_size / self.image_size.Y
-        canvas.set_render_size(self.image_size.X * scale_fac, target_size)
+        scale_fac = self.scale / self.image_size.Y
+        canvas.set_render_size(self.image_size.X * scale_fac, self.scale)
         canvas.save_svg(self.output_path)
         _logger.info("SVG saved at %s", Path(self.output_path).absolute())
 
@@ -279,23 +293,25 @@ class DrawSplines:
                 components.extend(result)
 
         colors: dict[str, str] = {}
-        try:
-            with open("colors.json", encoding="utf8") as file:
-                colors = json.load(file)
-        except Exception:
-            pass
+        if self.colors_path:
+            try:
+                with open(self.colors_path, encoding="utf8") as file:
+                    colors = json.load(file)
+            except Exception:
+                pass
 
-        locations = [
-            point.OutVal + component.Properties.RelativeLocation
-            for component in components
-            for segment in component.Properties.Segments
-            if isinstance(segment, LandscapeSplineSegment)
-            for point in segment.Properties.SplineInfo.Points
-        ]
-        self.bound_min.X = min(self.bound_min.X, *[v.X for v in locations])
-        self.bound_min.Y = min(self.bound_min.Y, *[v.Y for v in locations])
-        self.bound_max.X = max(self.bound_max.X, *[v.X for v in locations])
-        self.bound_max.Y = max(self.bound_max.Y, *[v.Y for v in locations])
+        if self.image_size == Vector2D.zeroVector():
+            locations = [
+                point.OutVal + component.Properties.RelativeLocation
+                for component in components
+                for segment in component.Properties.Segments
+                if isinstance(segment, LandscapeSplineSegment)
+                for point in segment.Properties.SplineInfo.Points
+            ]
+            self.bound_min.X = min(self.bound_min.X, *[v.X for v in locations])
+            self.bound_min.Y = min(self.bound_min.Y, *[v.Y for v in locations])
+            self.bound_max.X = max(self.bound_max.X, *[v.X for v in locations])
+            self.bound_max.Y = max(self.bound_max.Y, *[v.Y for v in locations])
 
         self._plot_path(components, colors)
 
@@ -318,8 +334,24 @@ if __name__ == "__main__":
         "-d",
         type=str,
         required=False,
-        default="256x256",
-        help="SVG image output dimension i.e. 256x256",
+        default="256,256",
+        help="SVG image output dimension i.e. 256,256",
+    )
+    parser.add_argument(
+        "--offset",
+        "-O",
+        type=str,
+        required=False,
+        default="0,0",
+        help="Manual offset for the top left corner of the image i.e. 0,0. Only applied when using --dimension",
+    )
+    parser.add_argument(
+        "--scale",
+        "-s",
+        type=int,
+        required=False,
+        default=256,
+        help="Set the render scale of the SVG image",
     )
     parser.add_argument(
         "--log",
@@ -353,6 +385,8 @@ if __name__ == "__main__":
         args.input,
         output_path=args.output,
         image_size=args.dimension,
+        offset=args.offset,
+        scale=args.scale,
         workers=args.worker,
         colors_path=args.color,
     )

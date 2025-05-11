@@ -40,10 +40,19 @@ class Vector2D:
 
     def __str__(self) -> str:
         return f"(X: {self.X}, Y: {self.Y})"
+    
+    def __eq__(self, value: object) -> bool:
+        if isinstance(value, Vector2D):
+            return self.X == value.X and self.Y == value.Y
+        return False
 
     @staticmethod
     def min(A, B):
         return Vector2D(min(A.X, B.X), min(A.Y, B.Y))
+
+    @staticmethod
+    def zeroVector():
+        return Vector2D(0, 0)
 
 
 @dataclass
@@ -96,6 +105,10 @@ class Vector3D(Vector2D):
             return self + scaled
         else:
             raise TypeError
+
+    @staticmethod
+    def zeroVector():
+        return Vector3D(0, 0, 0)
 
 
 @dataclass
